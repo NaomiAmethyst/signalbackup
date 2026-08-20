@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "signalbackup"
+version = "0.1.0"
+description = "Extract messages and media from Signal's v2 (snapshot folder) backups into JSON"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+    { name = "Naomi Persephone Amethyst", email = "naomi@amethyst.name" },
+]
+keywords = ["signal", "backup", "messaging", "forensics", "export", "protobuf"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Chat",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
+dependencies = [
+    "cryptography>=41",
+]
+
+[project.urls]
+Homepage = "https://code.amethyst.name/naomi/signalbackup"
+Source = "https://code.amethyst.name/naomi/signalbackup"
+# code.amethyst.name is read-only to the public, so issues and pull requests
+# are handled on the GitHub mirror.
+Issues = "https://github.com/NaomiAmethyst/signalbackup/issues"
+Mirror = "https://github.com/NaomiAmethyst/signalbackup"
+
+[project.scripts]
+sigbackup = "signalbackup.cli:main"
+signal-backup-extract = "signalbackup.cli:main"
+
+[project.optional-dependencies]
+dev = ["ruff>=0.6"]
+
+[tool.setuptools]
+packages = ["signalbackup"]
+
+[tool.setuptools.package-data]
+signalbackup = ["protos/*.proto", "protos/README.md", "py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# Vendored verbatim; not ours to restyle.
+extend-exclude = ["signalbackup/protos"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "W",    # warnings
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "BLE",  # blind except
+    "C4",   # comprehensions
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "B008",    # argparse and dataclass defaults read fine as-is
+    "SIM108",  # ternaries are not always clearer than an if/else
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately reach into internals and build long literal fixtures.
+"tests/*" = ["E501"]

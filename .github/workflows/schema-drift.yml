@@ -1,0 +1,31 @@
+name: Vendored schema drift
+
+# The backup schema is vendored, not compiled, so it can silently fall behind
+# whatever Signal ships. This job just tells us when that has happened; it is
+# deliberately separate from CI so a Signal release never reds up unrelated PRs.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Compare protos against upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Diff vendored protos against Signal
+        run: sh tools/check-vendored-protos.sh
+
+      - name: Confirm the tests still pass against a refreshed schema
+        if: failure()
+        run: |
+          sh tools/check-vendored-protos.sh --update || true
+          python -m unittest discover -s tests -t . \
+            && echo "Upstream changed, but the tests still pass. Refresh is safe." \
+            || echo "Upstream changed AND the tests fail. Needs a look."

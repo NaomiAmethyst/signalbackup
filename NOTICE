@@ -1,0 +1,67 @@
+signalbackup
+Copyright (C) 2026 Naomi Persephone Amethyst <naomi@amethyst.name>
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, version 3.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along
+with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
+================================================================================
+Third-party material
+================================================================================
+
+This project vendors two Protocol Buffers schema files, copied verbatim so that
+they can be diffed against upstream and refreshed without a build step.  Both
+are the work of Signal Messenger, LLC and are licensed AGPL-3.0-only.
+
+  signalbackup/protos/backup.proto
+    Copyright 2023-2026 Signal Messenger, LLC
+    SPDX-License-Identifier: AGPL-3.0-only
+    From:   https://github.com/signalapp/libsignal
+    Path:   rust/message-backup/src/proto/backup.proto
+    Commit: 72ee4a9917b9c71d67dca9402f4778100fe7d16c (2026-08-04)
+
+  signalbackup/protos/local_archive.proto
+    Copyright 2024-2026 Signal Messenger, LLC
+    SPDX-License-Identifier: AGPL-3.0-only
+    From:   https://github.com/signalapp/Signal-Android
+    Path:   lib/archive/src/main/protowire/LocalArchive.proto
+    Commit: 8a887b65a1adc3b87279b21f3f2fe5cd01912925 (2026-03-25)
+
+No other upstream code is copied.  The backup format handling in this project
+was written against the behaviour of the following upstream sources, which are
+also AGPL-3.0-only:
+
+  Signal-Android (https://github.com/signalapp/Signal-Android)
+    app/src/main/java/org/thoughtcrime/securesms/backup/v2/local/ArchiveFileSystem.kt
+    app/src/main/java/org/thoughtcrime/securesms/backup/v2/local/LocalArchiver.kt
+    lib/archive/src/main/java/org/signal/archive/stream/EncryptedBackupReader.kt
+    lib/archive/src/main/java/org/signal/archive/local/ArchivedFilesReader.kt
+    lib/libsignal-service/src/main/java/org/whispersystems/signalservice/api/crypto/AttachmentCipherOutputStream.kt
+    lib/libsignal-service/src/main/java/org/whispersystems/signalservice/internal/crypto/PaddingInputStream.java
+    core/models-jvm/src/main/java/org/signal/core/models/backup/MediaName.kt
+
+  libsignal (https://github.com/signalapp/libsignal)
+    rust/account-keys/src/backup.rs
+    rust/message-backup/src/key.rs
+    rust/crypto/src/aes_ctr.rs
+
+The key-derivation test vectors in tests/test_crypto.py are the published test
+vectors from libsignal's own test suite.
+
+
+================================================================================
+Trademarks
+================================================================================
+
+Signal is a registered trademark of Signal Messenger, LLC.  This project is an
+independent effort and is not affiliated with, endorsed by, or sponsored by
+Signal Messenger, LLC.  The name "signalbackup" describes what the tool reads;
+it does not imply any association.

@@ -1,0 +1,5 @@
+* text=auto eol=lf
+
+# Vendored verbatim from Signal. Kept diffable on purpose so they can be
+# compared against upstream, but excluded from language statistics.
+signalbackup/protos/*.proto linguist-vendored
