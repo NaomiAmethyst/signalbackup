@@ -10,6 +10,35 @@ renamed or removed keys are a major one.
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed export no longer destroys an existing output file. The destination
+  was opened (and so truncated) before the archive was authenticated, so a
+  wrong key or a corrupt archive would leave a previously good export empty.
+  Exports now go to a temporary file and are renamed into place on success.
+- Two distinct attachments can no longer collapse onto one output file. In the
+  by-chat layout the filename was built from a second-resolution timestamp, a
+  per-message position and the display filename, none of which is unique; the
+  second attachment was then mistaken for an already-extracted copy, never
+  written, and its manifest entry pointed at the first one's bytes. Filenames
+  now carry a fragment of the media name.
+- JSONL output no longer references recipients it has not declared. Only the
+  chat's owner and the message's author were emitted ahead of a message, so
+  reaction authors, quote authors, send-status recipients, poll voters and
+  `deletedBy` admins could dangle. Chats with no matching messages were also
+  written without their recipient.
+- `--limit 0` and negative limits exported one message instead of none. The
+  limit is now validated as a positive integer at parse time, for both
+  `export` and `frames`.
+
+### Changed
+
+- Extracted media filenames in the by-chat layout gain a 12-character media-name
+  fragment (`...-trailhead-76014dde9cb8.jpg`), which is what makes them unique.
+  The `flat` layout is unchanged.
+- Export files are created owner-readable only (0600); they contain plaintext
+  messages.
+
 ## [0.1.0] - 2026-08-20
 
 First release. Verified against real backups written by Signal Android 8.22.2,

@@ -25,6 +25,9 @@ In scope, roughly in order of how much I care:
   — including keys landing in exported JSON without `--include-keys`.
 - Path traversal when extracting media: an attachment's filename must never
   escape the output directory.
+- Two distinct attachments resolving to one output path, which would silently
+  drop one of them and misattribute the other.
+- A failed run destroying an existing output file.
 - Crashes or unbounded memory use on malformed input, past the point of being a
   denial of service against someone processing an untrusted archive.
 
@@ -46,6 +49,10 @@ Out of scope:
 - **Keys stay out of the output.** Per-attachment decryption keys are omitted
   from exports unless `--include-keys` is passed.
 - **Read-only.** Nothing writes to the backup directory.
+- **No destructive failures.** Exports are written to a temporary file and
+  renamed over the destination only after they complete, so a wrong key or a
+  corrupt archive leaves any existing output untouched. Export files are
+  created owner-readable only.
 - **Offline.** No network calls at runtime; the only dependency is
   `cryptography`.
 - **Bounded reads.** Frame lengths are capped and the archive is streamed, so a

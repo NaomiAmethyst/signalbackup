@@ -8,6 +8,7 @@ import getpass
 import json
 import os
 import sys
+import tempfile
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -25,6 +26,7 @@ from .model import (
     iso_timestamp,
     message_attachments,
     message_to_json,
+    referenced_recipient_ids,
 )
 
 PROGRAM = "sigbackup"
@@ -33,6 +35,17 @@ ENV_KEY = "SIGNAL_BACKUP_KEY"
 
 class UsageError(Exception):
     """A problem with the invocation, reported without a traceback."""
+
+
+def _positive_int(value: str) -> int:
+    """An argparse type for counts where zero and negatives are always a mistake."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or greater, got {number}")
+    return number
 
 
 # --------------------------------------------------------------------------
@@ -91,7 +104,8 @@ def _add_filter_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--search", metavar="TEXT", help="only messages whose body contains TEXT")
     group.add_argument("--no-updates", action="store_true",
                        help="drop system/update messages (joins, timer changes, calls)")
-    group.add_argument("--limit", type=int, metavar="N", help="stop after N messages")
+    group.add_argument("--limit", type=_positive_int, metavar="N",
+                       help="stop after N messages")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -182,7 +196,7 @@ def _build_parser() -> argparse.ArgumentParser:
     frames.add_argument("--kind", action="append", default=[], metavar="KIND",
                         choices=FRAME_KINDS,
                         help="only frames of this kind; one of " + ", ".join(FRAME_KINDS))
-    frames.add_argument("--limit", type=int, metavar="N")
+    frames.add_argument("--limit", type=_positive_int, metavar="N")
     frames.set_defaults(func=cmd_frames)
 
     return parser
@@ -268,14 +282,34 @@ def _message_filter(args: argparse.Namespace) -> MessageFilter:
 
 @contextlib.contextmanager
 def _output(path: str | Path) -> Iterator[TextIO]:
+    """Write to ``path``, replacing it only once the write has fully succeeded.
+
+    An export is generated lazily: the archive is not authenticated until the
+    frame stream is first read, well after the destination would have been
+    opened. Truncating up front would let a wrong key or a corrupt archive
+    destroy a previous good export, so the content goes to a sibling temporary
+    file and is renamed over the target at the end. On failure the target keeps
+    whatever it already had.
+    """
     if str(path) == "-":
         yield sys.stdout
         return
+
     target = Path(path)
-    if target.parent != Path(""):
-        target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target, "w", encoding="utf-8") as handle:
-        yield handle
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # mkstemp creates the file 0600; exports hold plaintext messages, so that
+    # is the right mode to land on the destination.
+    handle_fd, temporary = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.", suffix=".partial"
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+            yield handle
+        os.replace(temporary_path, target)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def _dump(value: Any, stream: TextIO, pretty: bool = True) -> None:
@@ -615,7 +649,11 @@ def _export_jsonl(reader: BackupReader, args: argparse.Namespace, archive: Archi
             seen_chats.add(chat.id)
             write_recipient(chat.recipient_id)
             write("chat", chat.to_json())
-        write_recipient((record.get("author") or {}).get("id"))
+        # Reaction authors, quote authors, send-status recipients and poll
+        # voters are all references too, and need declaring just as much as
+        # the message's own author.
+        for recipient_id in sorted(referenced_recipient_ids(record)):
+            write_recipient(recipient_id)
         write("message", record)
 
     index, count = _stream_messages(reader, args, archive, extractor, on_message, index)
@@ -625,6 +663,7 @@ def _export_jsonl(reader: BackupReader, args: argparse.Namespace, archive: Archi
                                      extractor.out_dir if extractor else None))
     for chat in index.chats.values():
         if chat.id not in seen_chats and chat_filter.matches(chat):
+            write_recipient(chat.recipient_id)
             write("chat", chat.to_json())
     return index, count
 

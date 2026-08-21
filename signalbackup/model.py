@@ -699,3 +699,30 @@ def message_attachments(item: dict[str, Any], schema: Schema) -> list[Attachment
     """The attachment refs for a chat item, in the same order as ``to_json``."""
     item_kind, payload = pick_oneof(item, schema.oneof_fields("signal.backup.ChatItem", "item"))
     return collect_attachments(item_kind, payload if isinstance(payload, dict) else {})
+
+
+def referenced_recipient_ids(record: Any) -> set[int]:
+    """Every recipient id a rendered message record refers to, at any depth.
+
+    Recipient references are rendered in one shape by :meth:`Index.recipient_ref`
+    - a dict carrying an integer ``id`` and a string ``name`` - so collecting
+    them structurally picks up reaction authors, quote authors, send-status
+    recipients, poll voters, ``deletedBy`` and edit revisions alike, including
+    any nested reference added later. The message record itself is keyed by
+    ``chatId``, so it is never mistaken for one.
+    """
+    found: set[int] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            identifier = node.get("id")
+            if isinstance(identifier, int) and isinstance(node.get("name"), str):
+                found.add(identifier)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(record)
+    return found

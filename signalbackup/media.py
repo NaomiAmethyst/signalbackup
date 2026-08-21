@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import mimetypes
 import re
 from dataclasses import dataclass, field
@@ -23,6 +24,10 @@ _EXTRA_TYPES = {
     "application/x-signal-plain": ".txt",
 }
 _MAX_NAME = 80
+# How much of the media name to fold into a by-chat filename. The media name is
+# a SHA-256, so this is what keeps two attachments that share a timestamp,
+# position and display filename from landing on the same path.
+_MEDIA_FRAGMENT = 12
 
 
 def slugify(text: str, fallback: str = "unnamed") -> str:
@@ -79,6 +84,7 @@ class MediaExtractor:
         self.verify_mac = verify_mac
         self.stats = MediaStats()
         self._written: dict[str, Path] = {}
+        self._claimed: dict[Path, str] = {}
 
     def extract(self, ref: AttachmentRef, record: dict[str, Any], sequence: int) -> Path | None:
         """Decrypt one attachment; returns where it landed, or None if unavailable."""
@@ -98,6 +104,13 @@ class MediaExtractor:
             return None
 
         destination = self._destination(ref, record, sequence)
+        owner = self._claimed.get(destination)
+        if owner is not None and owner != ref.media_name:
+            # Belt and braces: the media fragment in the name should already
+            # have separated these, so this only fires on a fragment collision.
+            destination = self._disambiguate(destination, ref.media_name)
+        self._claimed[destination] = ref.media_name
+
         if destination.exists() and not self.overwrite:
             self._written[ref.media_name] = destination
             self.stats.reused += 1
@@ -132,11 +145,27 @@ class MediaExtractor:
             f"{record.get('chatId', 0):03d}-{record.get('chat') or 'unknown'}", "chat"
         )
         stamp = _stamp(record.get("dateSent"))
+        fragment = ref.media_name[:_MEDIA_FRAGMENT]
+        # The timestamp is only second-resolution and the sequence restarts with
+        # every message, so neither is unique on its own: two messages sent in
+        # the same second can each carry an attachment at position 0 with the
+        # same display filename. Only the media name distinguishes them.
         if ref.file_name:
-            stem = slugify(Path(ref.file_name).stem, ref.media_name[:12])
+            stem = f"{slugify(Path(ref.file_name).stem, ref.role)}-{fragment}"
         else:
-            stem = f"{ref.role}-{ref.media_name[:12]}"
+            stem = f"{ref.role}-{fragment}"
         return chat_dir / f"{stamp}-{sequence:02d}-{stem}{extension}"
+
+    def _disambiguate(self, destination: Path, media_name: str) -> Path:
+        """Find a free path when two media names want the same one."""
+        for counter in itertools.count(2):
+            candidate = destination.with_name(
+                f"{destination.stem}-{counter}{destination.suffix}"
+            )
+            owner = self._claimed.get(candidate)
+            if owner is None or owner == media_name:
+                return candidate
+        raise AssertionError("unreachable")  # pragma: no cover
 
 
 def _stamp(millis: int | None) -> str:

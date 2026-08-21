@@ -16,7 +16,12 @@ from signalbackup import crypto
 from signalbackup.archive import Archive, ArchiveError
 from signalbackup.cli import main
 from signalbackup.filters import ChatFilter, FilterError, parse_timestamp
-from signalbackup.model import BackupReader, build_index, iso_timestamp
+from signalbackup.model import (
+    BackupReader,
+    build_index,
+    iso_timestamp,
+    referenced_recipient_ids,
+)
 from signalbackup.protoschema import ProtoError, parse_proto
 from signalbackup.schema import load_schema
 
@@ -785,3 +790,268 @@ class TestTimestampRendering(unittest.TestCase):
 
     def test_absurd_timestamps_do_not_raise(self):
         self.assertIsNone(iso_timestamp(10**18))
+
+
+class TestOutputIsAtomic(unittest.TestCase):
+    """A failed export must not damage whatever was already at the destination."""
+
+    SENTINEL = '{"precious": "data"}\n'
+
+    def test_wrong_key_leaves_an_existing_export_intact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            out = Path(tmp) / "existing.json"
+            out.write_text(self.SENTINEL, encoding="utf-8")
+
+            code, _, err = run_cli("export", str(root), "--key", "a" * 64, "-o", str(out))
+
+            self.assertEqual(code, 3)
+            self.assertIn("authentication failed", err)
+            self.assertEqual(out.read_text(encoding="utf-8"), self.SENTINEL)
+
+    def test_corrupt_archive_leaves_an_existing_export_intact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            main_file = next(root.glob("signal-backup-*/main"))
+            main_file.write_bytes(main_file.read_bytes()[:-64])
+            out = Path(tmp) / "existing.json"
+            out.write_text(self.SENTINEL, encoding="utf-8")
+
+            code, _, _ = run_cli("export", str(root), "--key", DEMO_KEY, "-o", str(out))
+
+            self.assertEqual(code, 3)
+            self.assertEqual(out.read_text(encoding="utf-8"), self.SENTINEL)
+
+    def test_failed_export_leaves_no_temporary_files_behind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            target = Path(tmp) / "exports"
+            run_cli("export", str(root), "--key", "a" * 64, "-o", str(target / "out.json"))
+            leftovers = [p.name for p in target.iterdir()] if target.exists() else []
+            self.assertEqual(leftovers, [])
+
+    def test_successful_export_still_replaces_the_old_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            out = Path(tmp) / "existing.json"
+            out.write_text(self.SENTINEL, encoding="utf-8")
+
+            code, _, _ = run_cli("export", str(root), "--key", DEMO_KEY, "-o", str(out))
+
+            self.assertEqual(code, 0)
+            self.assertEqual(len(json.loads(out.read_text())["messages"]), 7)
+
+    def test_export_is_written_owner_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            out = Path(tmp) / "out.json"
+            run_cli("export", str(root), "--key", DEMO_KEY, "-o", str(out))
+            self.assertEqual(out.stat().st_mode & 0o077, 0, "export readable by others")
+
+
+class TestMediaCollisions(unittest.TestCase):
+    """Two attachments can share a second, a position and a display filename."""
+
+    def _colliding_archive(self, tmp: Path) -> tuple[Path, bytes, bytes]:
+        builder = BackupBuilder()
+        builder.add_account()
+        builder.add_self(1)
+        other = builder.add_contact(2, "Dana")
+        chat = builder.add_chat(5, other)
+        first, second = b"first payload", b"second payload"
+        sent = 1_755_400_000_000
+        builder.add_message(chat, other, sent, "one",
+                            attachments=[Attachment(first, "text/plain", "same.txt")])
+        # 100 ms later: same second, same position, same filename, different bytes.
+        builder.add_message(chat, other, sent + 100, "two",
+                            attachments=[Attachment(second, "text/plain", "same.txt")])
+        return builder.write(tmp), first, second
+
+    def test_distinct_attachments_never_share_a_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, first, second = self._colliding_archive(Path(tmp))
+            out = Path(tmp) / "media"
+            code, _, err = run_cli("media", str(root), "--key", DEMO_KEY, "-o", str(out))
+            self.assertEqual(code, 0)
+
+            written = sorted(p for p in out.rglob("*") if p.is_file())
+            self.assertEqual(len(written), 2, [p.name for p in written])
+            self.assertEqual({p.read_bytes() for p in written}, {first, second})
+            self.assertIn("2 written", err)
+            self.assertIn("0 already present", err)
+
+    def test_neither_attachment_is_counted_as_deduplicated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _, _ = self._colliding_archive(Path(tmp))
+            out = Path(tmp) / "media"
+            run_cli("media", str(root), "--key", DEMO_KEY, "-o", str(out),
+                    "--manifest", str(Path(tmp) / "m.json"))
+            manifest = json.loads((Path(tmp) / "m.json").read_text())
+            paths = [entry["extractedPath"] for entry in manifest["files"]]
+            self.assertEqual(len(paths), 2)
+            self.assertEqual(len(set(paths)), 2, f"manifest points twice at {paths}")
+
+    def test_manifest_paths_match_the_bytes_on_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, first, second = self._colliding_archive(Path(tmp))
+            out = Path(tmp) / "media"
+            run_cli("media", str(root), "--key", DEMO_KEY, "-o", str(out),
+                    "--manifest", str(Path(tmp) / "m.json"))
+            manifest = json.loads((Path(tmp) / "m.json").read_text())
+
+            contents = {(out / entry["extractedPath"]).read_bytes()
+                        for entry in manifest["files"]}
+            self.assertEqual(contents, {first, second})
+
+    def test_true_duplicates_are_still_deduplicated(self):
+        # The same attachment referenced twice must not be written twice.
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = BackupBuilder()
+            builder.add_account()
+            builder.add_self(1)
+            other = builder.add_contact(2, "Dana")
+            chat = builder.add_chat(5, other)
+            shared = Attachment(b"one and the same", "text/plain", "shared.txt")
+            builder.add_message(chat, other, 1_755_400_000_000, "a", attachments=[shared])
+            builder.add_message(chat, other, 1_755_400_050_000, "b", attachments=[shared])
+            root = builder.write(Path(tmp))
+
+            out = Path(tmp) / "media"
+            _, _, err = run_cli("media", str(root), "--key", DEMO_KEY, "-o", str(out))
+            written = [p for p in out.rglob("*") if p.is_file()]
+            self.assertEqual(len(written), 1)
+            self.assertIn("1 written", err)
+
+
+class TestJsonlDeclaresEveryReference(unittest.TestCase):
+    """The documented contract: no record may reference an undeclared recipient."""
+
+    def _rich_archive(self, tmp: Path) -> Path:
+        builder = BackupBuilder()
+        builder.add_account()
+        me = builder.add_self(1)
+        alice = uuid.UUID("11111111-1111-4111-8111-111111111111")
+        bob = uuid.UUID("22222222-2222-4222-8222-222222222222")
+        carol = uuid.UUID("33333333-3333-4333-8333-333333333333")
+
+        alice_id = builder.add_contact(2, "Alice", aci=alice)
+        # Bob, Carol and Dave never author a message or own a chat; they appear
+        # only as a reaction author, a quote author, a voter and an admin.
+        bob_id = builder.add_contact(3, "Bob", aci=bob)
+        carol_id = builder.add_contact(4, "Carol", aci=carol)
+        dave_id = builder.add_contact(5, "Dave")
+        group = builder.add_group(6, "Crew", [alice, bob, carol])
+        chat = builder.add_chat(9, group)
+
+        base = 1_755_400_000_000
+        builder.add_message(chat, alice_id, base, "reacted to",
+                            reactions=[("\N{THUMBS UP SIGN}", bob_id, base + 1_000)])
+        builder.add_message(chat, alice_id, base + 10_000, "quoting", quote={
+            "authorId": carol_id,
+            "targetSentTimestamp": base - 5_000,
+            "text": {"body": "the quoted line"},
+            "type": "NORMAL",
+        })
+        builder.add_message(chat, me, base + 20_000, "sent out", incoming=False)
+        builder.add_poll(chat, alice_id, base + 30_000, "Lunch?",
+                         [("yes", [bob_id, carol_id]), ("no", [dave_id])])
+        builder.add_admin_deleted(chat, alice_id, base + 40_000, admin_id=carol_id)
+        return builder.write(tmp)
+
+    def _assert_no_dangling(self, output: str) -> list[dict]:
+        declared: set[int] = set()
+        records = []
+        for line in output.splitlines():
+            record = json.loads(line)
+            records.append(record)
+            kind = record["record"]
+            if kind == "recipient":
+                declared.add(record["id"])
+                continue
+            if kind == "chat":
+                self.assertIn(record["recipientId"], declared,
+                              f"chat {record['id']} references undeclared recipient")
+                continue
+            if kind == "message":
+                for recipient_id in sorted(referenced_recipient_ids(record)):
+                    self.assertIn(
+                        recipient_id, declared,
+                        f"message at {record.get('dateSent')} references "
+                        f"undeclared recipient {recipient_id}",
+                    )
+        return records
+
+    def test_nested_references_are_declared_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._rich_archive(Path(tmp))
+            code, out, _ = run_cli("export", str(root), "--key", DEMO_KEY, "-f", "jsonl")
+            self.assertEqual(code, 0)
+            records = self._assert_no_dangling(out)
+            self.assertEqual(sum(1 for r in records if r["record"] == "message"), 5)
+
+    def test_reaction_quote_poll_and_admin_authors_all_appear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._rich_archive(Path(tmp))
+            _, out, _ = run_cli("export", str(root), "--key", DEMO_KEY, "-f", "jsonl")
+            names = {json.loads(line)["name"]
+                     for line in out.splitlines()
+                     if json.loads(line)["record"] == "recipient"}
+            self.assertLessEqual({"Bob", "Carol", "Dave"}, names)
+
+    def test_send_status_recipients_are_declared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            _, out, _ = run_cli("export", str(root), "--key", DEMO_KEY, "-f", "jsonl")
+            self._assert_no_dangling(out)
+
+    def test_filtered_export_with_no_matching_messages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            code, out, _ = run_cli("export", str(root), "--key", DEMO_KEY,
+                                   "-f", "jsonl", "--search", "NO_SUCH_TEXT")
+            self.assertEqual(code, 0)
+            records = self._assert_no_dangling(out)
+            self.assertEqual(sum(1 for r in records if r["record"] == "message"), 0)
+            self.assertGreater(sum(1 for r in records if r["record"] == "chat"), 0)
+
+    def test_collector_ignores_non_recipient_structures(self):
+        record = {
+            "chatId": 4,
+            "author": {"id": 7, "name": "Someone"},
+            "attachments": [{"fileName": "x.jpg", "size": 3, "mediaName": "ab"}],
+            "sticker": {"packId": "ff", "stickerId": 2},
+            "linkPreviews": [{"url": "https://example.invalid", "title": "T"}],
+        }
+        self.assertEqual(referenced_recipient_ids(record), {7})
+
+
+class TestLimitValidation(unittest.TestCase):
+    def test_limit_one_exports_exactly_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            code, out, _ = run_cli("export", str(root), "--key", DEMO_KEY, "--limit", "1")
+            self.assertEqual(code, 0)
+            self.assertEqual(len(json.loads(out)["messages"]), 1)
+
+    def test_zero_and_negative_limits_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            for value in ("0", "-1", "-5"):
+                with self.assertRaises(SystemExit) as raised:
+                    run_cli("export", str(root), "--key", DEMO_KEY, "--limit", value)
+                self.assertEqual(raised.exception.code, 2, f"--limit {value}")
+
+    def test_non_numeric_limit_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            with self.assertRaises(SystemExit):
+                run_cli("export", str(root), "--key", DEMO_KEY, "--limit", "lots")
+
+    def test_frames_limit_is_validated_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = build_demo_archive(Path(tmp))
+            with self.assertRaises(SystemExit):
+                run_cli("frames", str(root), "--key", DEMO_KEY, "--limit", "0")
+            code, out, _ = run_cli("frames", str(root), "--key", DEMO_KEY, "--limit", "2")
+            self.assertEqual(code, 0)
+            self.assertEqual(len(out.splitlines()), 2)

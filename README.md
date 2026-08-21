@@ -129,7 +129,9 @@ someone's UUID. Explicit prefixes are `id:`, `recipient:`, `group:`,
 result to that kind of chat.
 
 `--since` / `--until` accept `YYYY-MM-DD`, an ISO-8601 datetime, or epoch
-milliseconds. Times without a zone are read as UTC.
+milliseconds. Times without a zone are read as UTC. `--limit` must be 1 or
+greater; zero and negative values are rejected rather than quietly doing
+something arbitrary.
 
 ### Media
 
@@ -138,10 +140,15 @@ milliseconds. Times without a zone are read as UTC.
 $ sigbackup media ~/SignalBackups --groups -o ./media --manifest media.json
 ```
 
-Attachments land in `<out>/<chatid>-<chat-name>/<timestamp>-<n>-<filename>`,
-or use `--media-layout flat` to name every file after its media name. Files are
-de-duplicated by media name (Signal stores one blob per unique attachment), and
-re-running skips anything already written unless you pass `--overwrite`.
+Attachments land in
+`<out>/<chatid>-<chat-name>/<timestamp>-<n>-<filename>-<mediaid>`, or use
+`--media-layout flat` to name every file after its media name. The `<mediaid>`
+fragment is the first 12 characters of the attachment's media name: a timestamp
+is only second-resolution and `<n>` restarts with every message, so two
+attachments sent in the same second under the same display filename would
+otherwise collide. Files are de-duplicated by media name (Signal stores one
+blob per unique attachment), and re-running skips anything already written
+unless you pass `--overwrite`.
 
 Attachments whose blob is missing from `files/` are reported and marked
 `"available": false` rather than aborting the export. Signal only stores a blob
@@ -174,6 +181,11 @@ for their own meaning — a chat's `"group"`, a message's `"standardMessage"`.
 $ sigbackup export ~/SignalBackups -f jsonl | jq -r 'select(.record=="message") | .body'
 ```
 
+Every recipient id a record refers to — a chat's owner, a message's author, a
+reaction or quote author, a send-status recipient, a poll voter — is declared by
+a preceding `recipient` line, so a streaming consumer never meets an id it has
+not seen.
+
 ### A message
 
 ```json
@@ -197,7 +209,7 @@ $ sigbackup export ~/SignalBackups -f jsonl | jq -r 'select(.record=="message") 
       "mediaName": "76014dde...",
       "available": true,
       "path": "files/76/76014dde...",
-      "extractedPath": "010-Alice_Anderson/20250817-030840-00-trailhead.jpg"
+      "extractedPath": "010-Alice_Anderson/20250817-030840-00-trailhead-76014dde9cb8.jpg"
     }
   ]
 }
@@ -233,7 +245,10 @@ as a fallback if a snapshot's metadata is damaged.
 
 Everything is authenticated before it is decrypted, so a wrong key or a
 corrupted file is reported rather than silently producing garbage. `main` is
-streamed, so memory use stays flat regardless of backup size.
+streamed, so memory use stays flat regardless of backup size. Because that
+authentication happens as the stream is read — after the output file would
+normally have been opened — exports are written to a temporary file and renamed
+into place only on success, so a failed run cannot destroy a previous export.
 
 The schema lives in `signalbackup/protos/backup.proto`, copied from libsignal.
 To follow a newer Signal release, drop in the updated file — there is nothing

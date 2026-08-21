@@ -193,6 +193,37 @@ class BackupBuilder:
             "standardMessage": standard,
         }})
 
+    def add_poll(self, chat_id: int, author_id: int, date_sent: int, question: str,
+                 options: list[tuple[str, list[int]]]) -> None:
+        """A poll whose options carry voter recipient ids."""
+        self.add_frame({"chatItem": {
+            "chatId": chat_id,
+            "authorId": author_id,
+            "dateSent": date_sent,
+            "incoming": {"dateReceived": date_sent, "read": True},
+            "poll": {
+                "question": question,
+                "options": [
+                    {
+                        "option": text,
+                        "votes": [{"voterId": voter, "voteCount": 1} for voter in voters],
+                    }
+                    for text, voters in options
+                ],
+            },
+        }})
+
+    def add_admin_deleted(self, chat_id: int, author_id: int, date_sent: int,
+                          admin_id: int) -> None:
+        """A message removed by a group admin, which references that admin."""
+        self.add_frame({"chatItem": {
+            "chatId": chat_id,
+            "authorId": author_id,
+            "dateSent": date_sent,
+            "incoming": {"dateReceived": date_sent, "read": True},
+            "adminDeletedMessage": {"adminId": admin_id},
+        }})
+
     def add_update(self, chat_id: int, author_id: int, date_sent: int,
                    simple_type: str = "JOINED_SIGNAL") -> None:
         self.add_frame({"chatItem": {
