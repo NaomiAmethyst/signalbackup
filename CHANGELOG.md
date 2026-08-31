@@ -33,6 +33,13 @@ renamed or removed keys are a major one.
 
 ### Changed
 
+- Refreshed the vendored `backup.proto` to libsignal
+  `cb9887dbcab5e098f43c038d2f3eb8998fe196a0` (2026-08-24), which adds Signal's
+  new notification settings: an `UnreadBadgeType` enum and eight
+  `AccountData.AccountSettings` fields, plus four per-`Chat` mute overrides.
+  The change is purely additive and needed no code change — backups written
+  before or after it read either way. The new fields are reachable through
+  `frames` and `export --raw`; the curated `chats` output is unchanged.
 - Extracted media filenames in the by-chat layout gain a 12-character media-name
   fragment (`...-trailhead-76014dde9cb8.jpg`), which is what makes them unique.
   The `flat` layout is unchanged.

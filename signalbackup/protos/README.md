@@ -5,7 +5,7 @@ can be diffed against upstream. Do not reformat, reorder or hand-edit them.
 
 | File | Upstream | Path | Commit |
 | --- | --- | --- | --- |
-| `backup.proto` | [libsignal](https://github.com/signalapp/libsignal) | `rust/message-backup/src/proto/backup.proto` | `72ee4a9917b9c71d67dca9402f4778100fe7d16c` (2026-08-04) |
+| `backup.proto` | [libsignal](https://github.com/signalapp/libsignal) | `rust/message-backup/src/proto/backup.proto` | `cb9887dbcab5e098f43c038d2f3eb8998fe196a0` (2026-08-24) |
 | `local_archive.proto` | [Signal-Android](https://github.com/signalapp/Signal-Android) | `lib/archive/src/main/protowire/LocalArchive.proto` | `8a887b65a1adc3b87279b21f3f2fe5cd01912925` (2026-03-25) |
 
 Both are © Signal Messenger, LLC and licensed AGPL-3.0-only. See the top-level

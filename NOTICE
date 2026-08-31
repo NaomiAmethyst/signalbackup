@@ -26,7 +26,7 @@ are the work of Signal Messenger, LLC and are licensed AGPL-3.0-only.
     SPDX-License-Identifier: AGPL-3.0-only
     From:   https://github.com/signalapp/libsignal
     Path:   rust/message-backup/src/proto/backup.proto
-    Commit: 72ee4a9917b9c71d67dca9402f4778100fe7d16c (2026-08-04)
+    Commit: cb9887dbcab5e098f43c038d2f3eb8998fe196a0 (2026-08-24)
 
   signalbackup/protos/local_archive.proto
     Copyright 2024-2026 Signal Messenger, LLC

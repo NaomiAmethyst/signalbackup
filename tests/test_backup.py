@@ -1055,3 +1055,78 @@ class TestLimitValidation(unittest.TestCase):
             code, out, _ = run_cli("frames", str(root), "--key", DEMO_KEY, "--limit", "2")
             self.assertEqual(code, 0)
             self.assertEqual(len(out.splitlines()), 2)
+
+
+class TestSchemaRefresh(unittest.TestCase):
+    """Guards the 2026-08-24 libsignal refresh: new notification settings.
+
+    The vendored schema is parsed at runtime, so an upstream addition should
+    need no code change. These pin that it actually landed and that the parser
+    copes with a newly nested enum.
+    """
+
+    def test_new_nested_enum_is_parsed(self):
+        schema = load_schema()
+        enum = schema.enums["signal.backup.AccountData.AccountSettings.UnreadBadgeType"]
+        self.assertEqual(enum.by_number,
+                         {0: "UNKNOWN_BADGE_TYPE", 1: "UNREAD_MESSAGES", 2: "UNREAD_CHATS"})
+
+    def test_new_chat_notification_fields_round_trip(self):
+        schema = load_schema()
+        chat = {
+            "id": 3,
+            "recipientId": 9,
+            "notifyForCallsIfMuted": True,
+            "notifyForMentionsIfMuted": False,
+            "notifyForRepliesIfMuted": True,
+            "showUnreadReminders": False,
+        }
+        raw = schema.encode({"chat": chat}, "signal.backup.Frame", bytes_as="hex")
+        self.assertEqual(schema.decode(raw, "signal.backup.Frame", bytes_as="hex"),
+                         {"chat": chat})
+
+    def test_new_account_settings_round_trip(self):
+        schema = load_schema()
+        settings = {
+            "unreadBadgeType": "UNREAD_CHATS",
+            "includeMutedChatsInBadge": True,
+            "reactionNotifications": False,
+            "notifyWhenContactJoins": True,
+        }
+        raw = schema.encode(settings, "signal.backup.AccountData.AccountSettings")
+        self.assertEqual(schema.decode(raw, "signal.backup.AccountData.AccountSettings"),
+                         settings)
+
+    def test_a_chat_carrying_the_new_fields_still_exports(self):
+        # The curated chat output is a summary, so the new settings should not
+        # appear there -- but they must not disturb anything either.
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = BackupBuilder()
+            builder.add_account()
+            builder.add_self(1)
+            other = builder.add_contact(2, "Wren")
+            builder.add_chat(4, other, notifyForCallsIfMuted=True,
+                             showUnreadReminders=False)
+            builder.add_message(4, other, 1_755_400_000_000, "still fine")
+            root = builder.write(Path(tmp))
+
+            code, out, _ = run_cli("export", str(root), "--key", DEMO_KEY)
+            self.assertEqual(code, 0)
+            document = json.loads(out)
+            self.assertEqual(len(document["messages"]), 1)
+            self.assertEqual(document["chats"][0]["id"], 4)
+
+    def test_raw_frames_expose_the_new_fields(self):
+        # Anything not in the curated output stays reachable via `frames`.
+        with tempfile.TemporaryDirectory() as tmp:
+            builder = BackupBuilder()
+            builder.add_account()
+            builder.add_self(1)
+            other = builder.add_contact(2, "Wren")
+            builder.add_chat(4, other, notifyForCallsIfMuted=True)
+            root = builder.write(Path(tmp))
+
+            code, out, _ = run_cli("frames", str(root), "--key", DEMO_KEY, "--kind", "chat")
+            self.assertEqual(code, 0)
+            frame = json.loads(out.splitlines()[0])
+            self.assertIs(frame["chat"]["notifyForCallsIfMuted"], True)
