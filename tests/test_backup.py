@@ -58,17 +58,17 @@ class DemoArchiveTestCase(unittest.TestCase):
 class TestArchiveDiscovery(DemoArchiveTestCase):
     def test_opens_archive_root(self):
         archive = Archive.open(self.root)
-        self.assertEqual(archive.root, self.root)
+        self.assertEqual(archive.root, self.root.resolve())
         self.assertEqual(len(archive.snapshots()), 1)
 
     def test_opens_parent_of_archive_root(self):
         archive = Archive.open(self.root.parent)
-        self.assertEqual(archive.root, self.root)
+        self.assertEqual(archive.root, self.root.resolve())
 
     def test_opens_single_snapshot_directory(self):
         snapshot_dir = next(p for p in self.root.iterdir() if p.name.startswith("signal-backup"))
         archive = Archive.open(snapshot_dir)
-        self.assertEqual(archive.root, self.root)
+        self.assertEqual(archive.root, self.root.resolve())
         self.assertEqual([s.name for s in archive.snapshots()], [snapshot_dir.name])
 
     def test_rejects_unrelated_directory(self):
@@ -317,7 +317,7 @@ class TestMediaExtraction(DemoArchiveTestCase):
             manifest_path = Path(out) / "manifest.json"
             run_cli("media", str(self.root), "--key", DEMO_KEY, "-o", out,
                     "--manifest", str(manifest_path))
-            manifest = json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(len(manifest["files"]), 2)
         self.assertTrue(all("extractedPath" in entry for entry in manifest["files"]))
 
@@ -839,7 +839,7 @@ class TestOutputIsAtomic(unittest.TestCase):
             code, _, _ = run_cli("export", str(root), "--key", DEMO_KEY, "-o", str(out))
 
             self.assertEqual(code, 0)
-            self.assertEqual(len(json.loads(out.read_text())["messages"]), 7)
+            self.assertEqual(len(json.loads(out.read_text(encoding="utf-8"))["messages"]), 7)
 
     @unittest.skipUnless(os.name == "posix", "POSIX permission bits do not model Windows ACLs")
     def test_export_is_written_owner_only(self):
@@ -887,7 +887,7 @@ class TestMediaCollisions(unittest.TestCase):
             out = Path(tmp) / "media"
             run_cli("media", str(root), "--key", DEMO_KEY, "-o", str(out),
                     "--manifest", str(Path(tmp) / "m.json"))
-            manifest = json.loads((Path(tmp) / "m.json").read_text())
+            manifest = json.loads((Path(tmp) / "m.json").read_text(encoding="utf-8"))
             paths = [entry["extractedPath"] for entry in manifest["files"]]
             self.assertEqual(len(paths), 2)
             self.assertEqual(len(set(paths)), 2, f"manifest points twice at {paths}")
@@ -898,7 +898,7 @@ class TestMediaCollisions(unittest.TestCase):
             out = Path(tmp) / "media"
             run_cli("media", str(root), "--key", DEMO_KEY, "-o", str(out),
                     "--manifest", str(Path(tmp) / "m.json"))
-            manifest = json.loads((Path(tmp) / "m.json").read_text())
+            manifest = json.loads((Path(tmp) / "m.json").read_text(encoding="utf-8"))
 
             contents = {(out / entry["extractedPath"]).read_bytes()
                         for entry in manifest["files"]}
