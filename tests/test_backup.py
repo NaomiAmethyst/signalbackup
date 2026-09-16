@@ -841,6 +841,7 @@ class TestOutputIsAtomic(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(len(json.loads(out.read_text())["messages"]), 7)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX permission bits do not model Windows ACLs")
     def test_export_is_written_owner_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = build_demo_archive(Path(tmp))

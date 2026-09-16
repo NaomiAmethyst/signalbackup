@@ -28,6 +28,49 @@ Media: 214 written (411.8 MiB), 0 already present, 3 unavailable, 0 failed
 
 ## Install
 
+### Standalone binaries
+
+Download the archive for your platform from
+[GitHub Releases](https://github.com/NaomiAmethyst/signalbackup/releases), extract
+it, and run `sigbackup` (`sigbackup.exe` on Windows). Python is bundled; no
+Python installation is required. Archives include `LICENSE`, `NOTICE`, and this
+README, with a separate `.sha256` checksum alongside each download.
+
+| Platform | Architectures | Build baseline |
+| --- | --- | --- |
+| Linux | amd64, arm64 | Ubuntu 22.04 (glibc 2.35 or newer) |
+| Windows | amd64 | Windows Server 2022 runner |
+| macOS | amd64, arm64 | macOS 15 (Intel), macOS 14 (Apple Silicon) |
+
+Linux binaries target glibc distributions; use the container on Alpine/musl.
+macOS binaries are not Developer ID signed or notarized. Builds for a specific
+commit are also available under **Artifacts** on its
+[CI run](https://github.com/NaomiAmethyst/signalbackup/actions/workflows/ci.yml).
+
+### Container
+
+`ghcr.io/naomiamethyst/signalbackup` supports `linux/amd64` and `linux/arm64`.
+The runtime is built `FROM scratch`, with the bundled application and required
+musl/zlib libraries, and defaults to a nonroot user. It has no shell or package
+manager. The CLI is the entry point, so pass its subcommand directly:
+
+```sh
+mkdir -p export
+docker run --rm --network none --read-only \
+  --user "$(id -u):$(id -g)" \
+  --mount "type=bind,src=$HOME/SignalBackups,dst=/backup,readonly" \
+  --mount "type=bind,src=$HOME/.signal-key,dst=/key,readonly" \
+  --mount "type=bind,src=$PWD/export,dst=/output" \
+  ghcr.io/naomiamethyst/signalbackup:latest \
+  export /backup --key-file /key -o /output/messages.json -m /output/media
+```
+
+`latest` and `main` track successful builds from `main`; version tags such as
+`v0.1.0` and commit tags (`sha-<full-commit-sha>`) are also published.
+Version tags do not move `latest`. For an interactive key prompt, add `-it`.
+
+### Python package
+
 ```console
 $ git clone https://github.com/NaomiAmethyst/signalbackup
 $ cd signalbackup
@@ -292,6 +335,32 @@ Backup key: dtjs858asj6tv0jzsqrsmj0ubp335pisj98e9ssnss8myoc08drhtcktyawvx45l
 
 $ sigbackup export /tmp/demo --key dtjs858asj6tv0jzsqrsmj0ubp335pisj98e9ssnss8myoc08drhtcktyawvx45l --pretty
 ```
+
+### Building distributable artifacts
+
+```sh
+python -m pip install . -r tools/requirements-build.txt
+python tools/build_binary.py --archive sigbackup-linux-amd64
+python -m tools.smoke_test --binary dist/sigbackup
+
+docker build -t signalbackup:local .
+python -m tools.smoke_test --image signalbackup:local
+```
+
+Build executables on their target OS and architecture; the archive name is just
+a label, not a cross-compilation option. Use `dist/sigbackup.exe` on Windows.
+The smoke test runs outside the checkout and checks archive authentication,
+JSON export, and byte-for-byte media recovery. Container testing also disables
+network access and makes the image filesystem read-only.
+
+CI builds native executables and both container architectures on pull requests,
+pushes to `main`, `v*` tags, and manual dispatches. Only `main` and `v*` builds in
+`NaomiAmethyst/signalbackup` publish to GHCR, using `GITHUB_TOKEN` with
+`packages: write`. A `v*` tag also creates a GitHub Release and uploads binary
+archives, checksums, and Python distributions after the build jobs pass. Tags
+containing a hyphen are marked as prereleases. Pull requests never publish to
+the registry or Releases. No extra registry secret is needed; set the GHCR
+package visibility to public after its first publication for anonymous pulls.
 
 ## Contributing
 

@@ -3,11 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -67,3 +72,191 @@ jobs:
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
+
+  binaries:
+    name: Binary (${{ matrix.platform }})
+    needs: [test, lint]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            platform: linux-amd64
+            executable: sigbackup
+          - runner: ubuntu-22.04-arm
+            platform: linux-arm64
+            executable: sigbackup
+          - runner: windows-2022
+            platform: windows-amd64
+            executable: sigbackup.exe
+          - runner: macos-15-intel
+            platform: macos-amd64
+            executable: sigbackup
+          - runner: macos-14
+            platform: macos-arm64
+            executable: sigbackup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build dependencies
+        run: python -m pip install . -r tools/requirements-build.txt
+      - name: Test on the target platform
+        run: python -m unittest discover -s tests -t . -v
+      - name: Build executable and archive
+        run: python tools/build_binary.py --archive sigbackup-${{ matrix.platform }}
+      - name: Smoke-test the standalone executable
+        run: python -m tools.smoke_test --binary dist/${{ matrix.executable }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sigbackup-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  container:
+    name: Container (${{ matrix.arch }})
+    needs: [test, lint]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    env:
+      IMAGE: ghcr.io/naomiamethyst/signalbackup
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install .
+      - uses: docker/setup-buildx-action@v4
+      - name: Build scratch image for testing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: signalbackup:test
+          cache-from: type=gha,scope=container-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.arch }}
+      - name: Smoke-test the scratch runtime
+        run: python -m tools.smoke_test --image signalbackup:test
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && github.repository == 'NaomiAmethyst/signalbackup' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push tested image by digest
+        id: push
+        if: github.event_name != 'pull_request' && github.repository == 'NaomiAmethyst/signalbackup' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=container-${{ matrix.arch }}
+      - name: Record image digest
+        if: steps.push.outcome == 'success'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p digests
+          touch "digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        if: steps.push.outcome == 'success'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-container:
+    name: Publish multiarch container
+    needs: container
+    if: github.event_name != 'pull_request' && github.repository == 'NaomiAmethyst/signalbackup' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/naomiamethyst/signalbackup
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,format=long
+      - name: Merge and publish platform manifests
+        working-directory: digests
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          args=()
+          while IFS= read -r tag; do args+=(--tag "$tag"); done <<< "$TAGS"
+          images=()
+          for digest in *; do images+=("${IMAGE}@sha256:${digest}"); done
+          docker buildx imagetools create "${args[@]}" "${images[@]}"
+          docker buildx imagetools inspect "${IMAGE}:sha-${GITHUB_SHA}"
+
+  release:
+    name: Publish release assets
+    needs: [build, binaries, publish-container]
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'NaomiAmethyst/signalbackup'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sigbackup-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: release
+      - name: Attach binaries and Python distributions to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            args=()
+            if [[ "$TAG" == *-* ]]; then args+=(--prerelease); fi
+            gh release create "$TAG" --verify-tag --generate-notes "${args[@]}"
+          fi
+          gh release upload "$TAG" release/* --clobber

@@ -1,0 +1,15 @@
+# Only send build inputs; local backups and exports must never enter the context.
+**
+!Dockerfile
+!pyproject.toml
+!README.md
+!LICENSE
+!NOTICE
+!signalbackup/
+!signalbackup/**
+!tools/
+!tools/requirements-build.txt
+!tools/entrypoint.py
+!tools/build_binary.py
+**/__pycache__/
+**/*.pyc
